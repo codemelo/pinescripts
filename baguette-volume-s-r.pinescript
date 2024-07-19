@@ -1,0 +1,356 @@
+//@version=5
+//Made by jerab
+
+indicator(title="Baguette Volume S/R", shorttitle="Baguette Volume S/R", overlay=true, precision = 8,max_bars_back = 300, max_lines_count = 500)
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+string showLevels = input.string("BOTH","Show Levels: ",options = ["ABOVE PRICE", "BELLOW PRICE", "BOTH"], group = "- - - - - SETTINGS - - - - -")
+int levelCount = input.int(4, "Number of levels (0 - 100)",minval = 0, maxval = 100)
+
+color newLevelColor = input.color(color.rgb(255, 255, 255, 75),"New Level Color", group = "- - - - - STYLE - - - - -")
+color testedLevelColor = input.color(color.rgb(239, 251, 0, 26),"Tested Level Color")
+color testedBrokenLevelColor = input.color(color.rgb(239, 251, 0, 50),"Tested And Broken Level Color")
+
+bool showZigZag = input.bool(true, "Show Trend ZigZag?", group = "- - - - - TREND ZIGZAG - - - - -")
+color zigzagColor = input.color(color.rgb(195, 0, 255, 42),"ZigZag Color")
+
+bool showEma = input.bool(false, "Show EMA?", group = "- - - - - EMA - - - - -")
+int emaLength = input.int(20, "EMA Length")
+color emaColor = input.color(color.rgb(255, 255, 255, 75),"EMA Color")
+
+ema = ta.ema(close, emaLength)
+plot(showEma? ema : na, title="EMA", color=emaColor)
+
+bool showEmaCloud = input.bool(false, "Show EMA Cloud?", group = "- - - - - EMA Cloud - - - - -")
+int emaCloudLength = input.int(50, "EMA Cloud Length")
+color emaCloudColor = input.color(color.rgb(195, 0, 255, 90),"EMA Cloud Color")
+color emaCloudMiddleColor = input.color(color.rgb(195, 0, 255, 70),"EMA Cloud Middle Color")
+
+cloudEma = ta.ema(close, emaCloudLength)
+plot(showEmaCloud? cloudEma : na, title="EMA Cloud Middle", color=emaCloudMiddleColor)
+cloudSize = ta.stdev(close, emaLength * 2) / 4
+p1 = plot(showEmaCloud ? cloudEma + cloudSize : na, 'Upper 50 Ema Cloud', color=emaCloudColor, offset=0)
+p2 = plot(showEmaCloud ? cloudEma - cloudSize : na, 'Lower 50 Ema Cloud', color=emaCloudColor, offset=0)
+fill(p1, p2, title='EMA Cloud', color=emaCloudColor)
+
+bool showFiftyMark = input.bool(false, "Mark 50% of candle?", group = "- - - - - 50% Mark - - - - -")
+color fiftyMarkColor = input.color(color.rgb(255, 0, 255, 63),"50% Mark Color")
+
+fifryPercentOfCandle = showFiftyMark? (high-low)/2+low : na
+plotbar(fifryPercentOfCandle,fifryPercentOfCandle,fifryPercentOfCandle,fifryPercentOfCandle, color= fiftyMarkColor)
+
+bool showOnlyNonBroken = input.bool(false, "Show only levels that weren't broken?", group = "- - - - - ADVANCED - - - - -")
+bool fakeoutBreaks = input.bool(true, "Count fakeout as breaking the level?")
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// LEVEL VARIABLES
+int[]  signal_candle_indexes = array.new<int>(levelCount, 0)
+float[] signal_prices = array.new<float>(levelCount, 0.0000)
+float[] distances  = array.new<float>(levelCount)
+string[] tested = array.new<string>(levelCount, "none")
+
+// LINE ARRAYS
+var lineArray = array.new_line(0)
+var highlightArray = array.new_line(0)
+
+// CONSTANTS
+var lastClosedBar = 1
+var numberOfLookback = 200
+
+// ZIG ZigZag
+var zz_zigzagArray = array.new_line(0)
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+fillStartValuesIntoArrays() =>
+    for i = 0 to levelCount-1
+        array.set(distances,i, 99999-i)
+getPotentionalLevel(i) =>
+    
+    // SUPPORT CONDITIONS
+        
+    // IF CANDLE DOWN THEN UP
+    bool bearishThenBullishCandle = open[i+1] > close[i+1] and open[i] < close[i]
+    // OR CANDLE DOWN, INDECISION, THEN UP
+    bool bearishThenDojiThenBullishCandle = open[i+2] > close[i+2] and open[i+1] == close[i+1] and open[i] < close[i]
+
+    // RESISTANCE CONDITIONS
+
+    // IF CANDLE UP THEN DOWN
+    bool bullishThenBearishCandle = open[i+1] < close[i+1] and open[i] > close[i]
+    // OR CANDLE UP, INDECISION, THEN DOWN
+    bool bullishThenDojiThenBearishCandle = open[i+2] < close[i+2] and open[i+1] == close[i+1] and open[i] > close[i]
+
+    string level = bearishThenBullishCandle or bearishThenDojiThenBullishCandle? "support" : bullishThenBearishCandle or bullishThenDojiThenBearishCandle? "resistance" : "none"
+
+validateLevel(level, i) =>
+    // CHECK IF PRICE REACTED TO THE LEVEL
+    bool levelValid = false
+
+    if level == "support"
+        if close[i] > open[i+1]//ENGULF
+            levelValid := true
+        else if i > 1 and close[i] > close[i+1] and close[i-1] > close[i]//TWO CANDLES UP AFTER ONE DOWN
+            levelValid := true
+
+    else if level == "resistance"
+        if close[i] < open[i+1]//ENGULF
+            levelValid := true
+        else if i > 1 and close[i] < close[i+1] and close[i-1] < close[i] //TWO CANDLES DOWN AFTER ONE UP
+            levelValid := true
+getEndIndexAndLevel(level,  i, breakMoveStartCandleIndex) =>
+    breakMoveEndCandleIndex = -1
+    breakMoveStartLevel = 0.0000    
+                
+    for j = i to 1 //FROM FIRST REJECTION CANDLE TO LAST ONE
+        if close[j] > open[breakMoveStartCandleIndex+1] and level == "support" //IF MOVE ENGULFS SIGNAL CANDLE
+            breakMoveEndCandleIndex := j
+            break
+        else if close[j] < open[breakMoveStartCandleIndex+1] and level == "resistance"
+            breakMoveEndCandleIndex := j
+            break
+
+    if level == "support"
+        // ENGULF
+        if open[breakMoveStartCandleIndex+1] > close[breakMoveStartCandleIndex+1] and close[breakMoveStartCandleIndex] > open[breakMoveStartCandleIndex+1]
+            breakMoveStartLevel := open[breakMoveStartCandleIndex+1]
+        // DOJI
+        else if open[breakMoveStartCandleIndex+2] > close[breakMoveStartCandleIndex+2] and open[breakMoveStartCandleIndex+1] == close[breakMoveStartCandleIndex+1] and open[breakMoveStartCandleIndex] < close[breakMoveStartCandleIndex]
+            breakMoveStartLevel := close[breakMoveStartCandleIndex+1]
+        else
+        // NON ENGULF
+            breakMoveStartLevel := close[breakMoveStartCandleIndex]
+    else if level == "resistance"
+        // ENGULF
+        if open[breakMoveStartCandleIndex+1] < close[breakMoveStartCandleIndex+1] and close[breakMoveStartCandleIndex] < open[breakMoveStartCandleIndex+1]
+            breakMoveStartLevel := open[breakMoveStartCandleIndex+1]
+        // DOJI
+        else if open[breakMoveStartCandleIndex+2] < close[breakMoveStartCandleIndex+2] and open[breakMoveStartCandleIndex+1] == close[breakMoveStartCandleIndex+1] and open[breakMoveStartCandleIndex] > close[breakMoveStartCandleIndex]
+            breakMoveStartLevel := close[breakMoveStartCandleIndex+1]
+        // NON ENGULF
+        else
+            breakMoveStartLevel := close[breakMoveStartCandleIndex]
+    [breakMoveEndCandleIndex, breakMoveStartLevel]
+isLevelCloser(breakMoveStartLevel) =>
+    closer = false
+    levelId = 0
+    float maxDistance = -1
+
+    for i = 0 to levelCount-1
+        if array.get(signal_candle_indexes,i) == 0 //IF SPACE FOR LEVEL IS EMPTY
+            closer := true
+            levelId := i
+            break
+
+        currentLevelDistance = math.abs(open - breakMoveStartLevel)
+
+        if array.get(distances,i) > currentLevelDistance and array.get(distances,i) > maxDistance //IF LEVEL IS CLOSER THAN SAVED LEVELS AND MOST DISTANT 
+            closer := true
+            levelId := i
+            maxDistance := array.get(distances,i)
+
+    [closer, levelId]
+handleLevelBreakAndTests(level, breakMoveStartCandleIndex, breakMoveEndCandleIndex, breakMoveStartLevel) =>
+    int breakThroughtCount = 0
+    bool levelTested = false
+    bool levelBrokenAndTested = false
+    int firstBreakIndex = -1
+
+    int moveEndIndex = -1
+
+    for j = breakMoveStartCandleIndex to 0
+        if level == "support" and close[j] < close[j+1]
+            moveEndIndex := j
+            break
+        else if level == "resistance" and close[j] > close[j+1]
+            moveEndIndex := j
+            break
+
+    if moveEndIndex != -1
+        for j = moveEndIndex to 0
+                                
+            if level == "support"
+                if close[j] >= breakMoveStartLevel and low[j] <= breakMoveStartLevel and breakThroughtCount == 0
+                    levelTested := true
+            
+                if j > 0
+                    breakOneCondition = fakeoutBreaks? close[j] < breakMoveStartLevel and breakThroughtCount == 0 : close[j] < breakMoveStartLevel and close[j-1] < breakMoveStartLevel and breakThroughtCount == 0
+                    breakTwoCondition = fakeoutBreaks? close[j] > breakMoveStartLevel and breakThroughtCount == 1 : close[j] > breakMoveStartLevel and close[j-1] > breakMoveStartLevel and breakThroughtCount == 1 
+
+                    if breakOneCondition
+                        breakThroughtCount := 1
+                        firstBreakIndex := j
+                    else if breakTwoCondition
+                        breakThroughtCount := 2
+
+            else if level == "resistance"
+                if close[j] <= breakMoveStartLevel and high[j] >= breakMoveStartLevel and breakThroughtCount == 0
+                    levelTested := true
+
+                if j > 0
+                    breakOneCondition = fakeoutBreaks? close[j] > breakMoveStartLevel and breakThroughtCount == 0 : close[j] > breakMoveStartLevel and close[j-1] > breakMoveStartLevel and breakThroughtCount == 0
+                    breakTwoCondition = fakeoutBreaks? close[j] < breakMoveStartLevel and breakThroughtCount == 1 : close[j] < breakMoveStartLevel and close[j-1] < breakMoveStartLevel and breakThroughtCount == 1
+                    
+                    if breakOneCondition
+                        breakThroughtCount := 1
+                        firstBreakIndex := j
+                    else if breakTwoCondition
+                        breakThroughtCount := 2
+            
+        if breakThroughtCount == 1
+            moveEndIndex := -1
+            for j = firstBreakIndex to 0
+                if level == "support" and close[j] > close[j+1]
+                    moveEndIndex := j
+                    break
+                else if level == "resistance" and close[j] < close[j+1]
+                    moveEndIndex := j
+                    break
+
+            if moveEndIndex != -1
+                for j = moveEndIndex to 0
+                    if level == "support"
+                        if close[j] <= breakMoveStartLevel and high[j] >= breakMoveStartLevel and breakThroughtCount == 1
+                            levelBrokenAndTested := true
+                    else if level == "resistance"
+                        if close[j] >= breakMoveStartLevel and low[j] <= breakMoveStartLevel and breakThroughtCount == 1
+                            levelBrokenAndTested := true
+
+    [breakThroughtCount, levelTested, levelBrokenAndTested]
+handleMultipleLevelsOnSamePrice(breakMoveStartLevel) =>
+    // CHECK THAT MULTIPLE LEVELS ARENT ON THE SAME PRICE
+    levelAlreadyOnPrice = false
+    for i = 0 to levelCount-1
+        if breakMoveStartLevel == array.get(signal_prices,i)
+            levelAlreadyOnPrice := true
+    levelAlreadyOnPrice
+
+getCurrentDir(i) => 
+
+    currentBarDir = "null"
+    if close[i] < close[i+1] 
+        currentBarDir := "down"
+    else if close[i] > close[i+1]
+        currentBarDir := "up" 
+    
+    currentBarDir
+handleZigZag() =>
+    string zz_startPosition = ""
+    int zz_startIndex = -1
+    string zz_lineDirection = "null"
+
+    for i = 1 to 100
+
+        currentBarDir = getCurrentDir(i)
+
+        if zz_startIndex == -1 and currentBarDir != "null"
+            zz_startIndex := i
+            zz_lineDirection := currentBarDir
+            if currentBarDir == "up"
+                zz_startPosition := "high"
+            else if currentBarDir == "down"
+                zz_startPosition := "low"
+            else
+                zz_startPosition := "close"
+
+
+        if currentBarDir != zz_lineDirection and currentBarDir != "null"
+            endIndex = i
+            startPos = zz_startPosition == "high"? high[zz_startIndex] : zz_startPosition == "low"? low[zz_startIndex] : close[zz_startIndex]
+            endPos = zz_startPosition == "high"? low[endIndex] : zz_startPosition == "low"? high[endIndex] : close[endIndex]
+
+            newLine = line.new(bar_index-endIndex,endPos,bar_index-zz_startIndex,startPos,color=zigzagColor, style = line.style_dotted, width = 2)
+            array.push(zz_zigzagArray, newLine)
+
+            zz_startIndex := i
+            zz_lineDirection := currentBarDir
+            if currentBarDir == "up"
+                zz_startPosition := "high"
+            else if currentBarDir == "down"
+                zz_startPosition := "low"
+            else
+                zz_startPosition := "close"
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// MAIN LOGIC
+
+if(barstate.islast) //MAKES SCRIPT FASTER
+    
+    if showZigZag
+        for _zzline in zz_zigzagArray 
+            line.delete(_zzline)
+
+        handleZigZag()
+
+    if levelCount > 0
+        fillStartValuesIntoArrays()
+
+        for i = lastClosedBar to numberOfLookback // LOOKS BACK TO SEARCH FOR FOR S/R, USING LAST CLOSED SO IT DOESNT REPAINT ON CURRENT CANDLE
+
+            breakMoveStartCandleIndex = i
+
+            string level = getPotentionalLevel(i)
+            if level != "none"
+                
+                if validateLevel(level, i) == true
+
+                    [breakMoveEndCandleIndex, breakMoveStartLevel] = getEndIndexAndLevel(level, i, breakMoveStartCandleIndex)
+        
+                    if showLevels == "ABOVE PRICE" and breakMoveStartLevel >= open or showLevels == "BELLOW PRICE" and breakMoveStartLevel <= open or showLevels == "BOTH"
+                        
+                        // CHECK IF LEVEL IS CLOSER THAN PREVIOUS ONES
+                        [breakThroughtCount, levelTested, levelBrokenAndTested] = handleLevelBreakAndTests(level, breakMoveStartCandleIndex, breakMoveEndCandleIndex,breakMoveStartLevel)
+                        
+                        breakThroughtCondition = breakThroughtCount == 0 ? true : breakThroughtCount == 1 and showOnlyNonBroken == false ? true : false
+                        if breakThroughtCondition
+                            
+                            [closer, levelId] = isLevelCloser(breakMoveStartLevel)
+
+                            if closer == true
+                                string testState = levelTested and breakThroughtCount == 0? "tested" : levelBrokenAndTested and breakThroughtCount == 1? "brokentested" : levelTested and breakThroughtCount == 1? "testedbroken" : "none"
+
+                                levelAlreadyOnPrice = handleMultipleLevelsOnSamePrice(breakMoveStartLevel)
+                                //log.info("Level already on prce {0}", levelAlreadyOnPrice)
+
+                                if levelAlreadyOnPrice == false
+                                    //log.info("Replacing {0} with {1}", array.get(signal_candle_indexes,levelId),breakMoveStartCandleIndex)
+                                    
+                                    array.set(distances,levelId,math.abs(open - breakMoveStartLevel))
+                                    array.set(signal_prices,levelId, breakMoveStartLevel)
+                                    array.set(signal_candle_indexes,levelId, breakMoveStartCandleIndex)
+                                    array.set(tested,levelId, testState)
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    if levelCount > 0
+        for _line in lineArray 
+            line.delete(_line)
+        for _highlight in highlightArray 
+            line.delete(_highlight)
+
+        for i = 0 to levelCount -1
+            if array.get(signal_prices, i) > 0
+                isTested = array.get(tested, i)
+                newLine = line.new(bar_index,close,bar_index,close)
+                newHighlight = line.new(bar_index,close,bar_index,close)
+                if isTested == "tested" or isTested == "brokentested"
+                    newLine := line.new(bar_index-array.get(signal_candle_indexes, i), array.get(signal_prices, i),bar_index, array.get(signal_prices, i), extend = extend.right, color = testedLevelColor, style = line.style_solid)
+                    newHighlight := line.new(bar_index-array.get(signal_candle_indexes, i), array.get(signal_prices, i),bar_index-array.get(signal_candle_indexes, i)-1, array.get(signal_prices, i), color = testedLevelColor, style = line.style_solid, width = 5)
+                else if isTested == "testedbroken"
+                    newLine := line.new(bar_index-array.get(signal_candle_indexes, i), array.get(signal_prices, i),bar_index, array.get(signal_prices, i), extend = extend.right, color = testedBrokenLevelColor, style = line.style_dashed)
+                    newHighlight := line.new(bar_index-array.get(signal_candle_indexes, i), array.get(signal_prices, i),bar_index-array.get(signal_candle_indexes, i)-1, array.get(signal_prices, i), color = testedBrokenLevelColor, style = line.style_dashed, width = 5)
+                else 
+                    newLine := line.new(bar_index-array.get(signal_candle_indexes, i), array.get(signal_prices, i),bar_index, array.get(signal_prices, i), extend = extend.right, color = newLevelColor, style = line.style_dashed)
+                    newHighlight := line.new(bar_index-array.get(signal_candle_indexes, i), array.get(signal_prices, i),bar_index-array.get(signal_candle_indexes, i)-1, array.get(signal_prices, i), color = newLevelColor, style = line.style_dashed, width = 5)
+                array.push(lineArray, newLine)
+                array.push(highlightArray, newHighlight)
