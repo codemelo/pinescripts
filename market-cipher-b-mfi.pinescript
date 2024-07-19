@@ -1,0 +1,189 @@
+//@version=5
+indicator(title="Cipher_B with MFI", shorttitle="Cipher_B MFI")
+
+// FUNCTIONS { 
+
+// DIVERGENCES
+f_top_fractal(_src) => _src[4] < _src[2] and _src[3] < _src[2] and _src[2] > _src[1] and _src[2] > _src[0]
+f_bot_fractal(_src) => _src[4] > _src[2] and _src[3] > _src[2] and _src[2] < _src[1] and _src[2] < _src[0]
+f_fractalize(_src) => f_top_fractal(_src) ? 1 : f_bot_fractal(_src) ? -1 : 0
+
+// MA Selector
+ma(matype, src, length) =>
+    switch matype
+        "RMA" => ta.rma(src, length)
+        "SMA" => ta.sma(src, length)
+        "EMA" => ta.ema(src, length)
+        "WMA" => ta.wma(src, length)
+        "VWMA" => ta.vwma(src, length)
+        => src
+
+// } FUNCTIONS 
+
+// PARAMETERS {
+
+// WaveTrend Channel Length
+n1 = input.int(7, "WT Channel Length")
+// WaveTrend Average Length
+n2 = input.int(13, "WT Average Length")
+
+// WaveTrend MA Params
+wtMA = input.string("EMA", "WT MA Type", options=["RMA", "SMA", "EMA", "WMA"])
+wtMA1 = input.string("EMA", "WT MA Type 1", options=["RMA", "SMA", "EMA", "WMA"])
+wtMA2 = input.string("EMA", "WT MA Type 2", options=["RMA", "SMA", "EMA", "WMA"])
+wtMA3 = input.string("SMA", "WT MA Type 3", options=["RMA", "SMA", "EMA", "WMA"])
+
+// WaveTrend Overbought & Oversold lines
+obLevel = input.float(53, "WT Overbought Level 1")
+obLevel2 = input.float(60, "WT Overbought Level 2")
+osLevel = input.float(-53, "WT Oversold Level 1")
+osLevel2 = input.float(-60, "WT Oversold Level 2")
+osLevel3 = input.float(-80, "WT Oversold Level 3")
+
+// WaveTrend MA Source
+ap = input(hlc3, "WaveTrend MA Source")
+
+// WaveTrend MA Length
+sp = input.int(3, "WaveTrend MA Length")
+
+// Colors
+colorRed = #ff0000
+colorPurple = #da00ff
+colorGreen = #03ff00
+colorOrange = color.orange
+colorWT1 = #8ec7fb
+colorWT2 = #1353ac
+
+// Divergence WT
+WTShowDiv = input.bool(true, 'Show WT Divergences')
+WTDivOBLevel = input.float(35, "WT Bearish Divergence min")
+WTDivOSLevel = input.float(-65, "WT Bullish Divergence min")
+
+// MFI
+showMFI = input.bool(true, "Show MFI")
+mfiPeriod = input.int(14, "MFI Period")
+mfiOverbought = input.float(80, "MFI Overbought")
+mfiOversold = input.float(20, "MFI Oversold")
+
+// } PARAMETERS
+
+// CALCULATE INDICATORS {
+
+// MFI
+mfi = ta.mfi(hlc3, mfiPeriod)
+
+// Calculates WaveTrend
+esa = ma(wtMA, ap, n1)
+de = ma(wtMA1, math.abs(ap - esa), n1)
+ci = (ap - esa) / (0.015 * de)
+tci = ma(wtMA2, ci, n2)
+wt1 = tci
+wt2 = ma(wtMA3, wt1, sp)
+
+// VWAP
+vwap_area = wt1 - wt2
+
+// WaveTrend Conditions
+WTCross = ta.cross(wt1, wt2)
+WTCrossUp = wt2 - wt1 <= 0
+
+WTCross_last = ta.cross(wt1[2], wt2[2])
+WTCrossUp_last = wt2[2] - wt1[2] <= 0
+WTCrossDown_last = wt2[2] - wt1[2] >= 0
+
+WTCrossDown = wt2 - wt1 >= 0
+WTOverSold = wt2 <= osLevel
+WTOverBought = wt2 >= obLevel
+
+// WT Divergence
+WTFractal_top = f_fractalize(wt2) > 0 and wt2[2] >= WTDivOBLevel ? wt2[2] : na
+WTFractal_bot = f_fractalize(wt2) < 0 and wt2[2] <= WTDivOSLevel ? wt2[2] : na
+
+WTHigh_prev  = ta.valuewhen(WTFractal_top, wt2[2], 0)[2]
+WTHigh_price = ta.valuewhen(WTFractal_top, high[2], 0)[2]
+WTLow_prev  = ta.valuewhen(WTFractal_bot, wt2[2], 0)[2]
+WTLow_price  = ta.valuewhen(WTFractal_bot, low[2], 0)[2]
+WTMFI_prev = ta.valuewhen(WTFractal_bot, mfi[2], 0)[2]
+
+bearWTSignal = WTFractal_top and high[2] > WTHigh_price and wt2[2] < WTHigh_prev
+bullWTSignal = WTFractal_bot and low[2] < WTLow_price and wt2[2] > WTLow_prev
+           
+WTCol1 = bearWTSignal ? colorRed : na
+WTCol2 = bullWTSignal ? #00FF00EB : na
+
+WTGoldBuy = WTLow_prev <= osLevel3 and WTMFI_prev < 20 and bullWTSignal
+
+// Small Circles WT Cross
+signalColor = wt2 - wt1 > 0 ? color.red : color.lime
+
+// Buy signal.
+buySignal = WTCross and WTCrossUp and WTOverSold
+divBuySignal = WTCross_last and WTCrossUp_last and bullWTSignal
+buySignalColor = buySignal ? color.new(colorGreen, 65) :  na
+
+// Sell signal
+sellSignal = WTCross and WTCrossDown and WTOverBought
+divSellSignal = WTCross_last and WTCrossDown_last and bearWTSignal
+sellSignalColor = sellSignal ? color.new(colorRed, 65) : na
+
+// Gold Buy
+plotWTGoldBuy = WTCrossUp_last and WTGoldBuy
+
+// } CALCULATE INDICATORS
+
+// DRAW {
+
+// 0 Line
+hline(0, "0 Line", color=color.gray)
+
+// Draw Overbought & Oversold lines
+hline(obLevel, "Over Bought Level 1", color=color.gray, linestyle=hline.style_dashed)
+hline(obLevel2, "Over Bought Level 2", color=color.gray, linestyle=hline.style_dotted)
+hline(osLevel, "Over Sold Level 1", color=color.gray, linestyle=hline.style_dashed)
+hline(osLevel2, "Over Sold Level 2", color=color.gray, linestyle=hline.style_dotted)
+
+// Divergences
+plot(WTFractal_top and WTShowDiv ? wt2[2] : na, "WT Bearish Divergence", color=WTCol1, linewidth=2, offset=-2)
+plot(WTFractal_bot and WTShowDiv ? wt2[2] : na, "WT Bullish Divergence", color=WTCol2, linewidth=2, offset=-2)
+
+// MFI
+mfiColor = mfi > mfiOverbought ? color.red : mfi < mfiOversold ? color.green : color.blue
+plot(showMFI ? mfi : na, "MFI", color=mfiColor, linewidth=2)
+hline(showMFI ? mfiOverbought : na, "MFI Overbought", color=color.red, linestyle=hline.style_dashed)
+hline(showMFI ? mfiOversold : na, "MFI Oversold", color=color.green, linestyle=hline.style_dashed)
+
+// WT Area 1
+plot(wt1, "WT Wave 1", color=colorWT1, style=plot.style_area, transp=0)
+// WT Area 2
+plot(wt2, "WT Wave 2", color=colorWT2, style=plot.style_area, transp=10)
+
+// VWAP
+plot(vwap_area, "VWAP", color=color.yellow, style=plot.style_area, transp=65)
+
+// Circles
+plot(WTCross ? wt2 : na, "Buy and sell signals", color=signalColor, style=plot.style_circles, linewidth=3)
+
+plotshape(buySignal ? -100 : na, "Big buy signal", color=buySignalColor, style=shape.circle, location=location.absolute, size=size.tiny)
+
+plotshape(divBuySignal ? -120 : na, "Big buy signal", color=colorPurple, style=shape.triangleup, location=location.absolute, size=size.tiny, offset=-2)
+plotshape(divBuySignal ? -100 : na, "Divergence buy signal", color=color.new(colorGreen, 0), style=shape.circle, location=location.absolute, size=size.tiny, offset=-2)
+
+plotshape(plotWTGoldBuy ? -100 : na, "Big short signal", color=color.orange, style=shape.circle, location=location.absolute, size=size.tiny, offset=-2)
+
+plotshape(sellSignal ? 100 : na, "Big short signal", color=sellSignalColor, style=shape.circle, location=location.absolute, size=size.tiny)
+plotshape(divSellSignal ? 120 : na, "Big short signal", color=colorPurple, style=shape.triangledown, location=location.absolute, size=size.tiny, offset=-2)
+plotshape(divSellSignal ? 100 : na, "Divergence short signal", color=color.new(colorRed, 0), style=shape.circle, location=location.absolute, size=size.tiny, offset=-2)
+
+// } DRAW
+
+// ALERTS {
+
+// BUY
+alertcondition(buySignal, "Buy Signal (Big green circle)", "Green circle WaveTrend Oversold")
+alertcondition(divBuySignal, "Buy Signal (Big green circle + Div)", "Buy signal & WT Bullish Divergence & WT Overbought ")
+alertcondition(plotWTGoldBuy, "GOLD Buy Signal (Big GOLDEN circle)", "Green & GOLD circle WaveTrend Overbought")
+
+// SELL
+alertcondition(sellSignal, "Sell Signal (Big red circle)", "Red Circle WaveTrend Overbought")
+alertcondition(divSellSignal, "Sell Signal (Big red circle + Div)", "Buy signal & WT Bearish Divergence & WT Overbought ")
+// } ALERTS
