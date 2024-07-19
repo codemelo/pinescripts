@@ -1,0 +1,14 @@
+//@version=5
+indicator("20 EMA and 1H 20 EMA", overlay=true)
+
+// Calculate 20 EMA on current timeframe
+ema_length = 20
+current_tf_ema = ta.ema(close, ema_length)
+
+// Calculate 20 EMA on 1-hour timeframe
+higher_tf = "60"
+higher_tf_ema = request.security(syminfo.tickerid, higher_tf, ta.ema(close, ema_length))
+
+// Plot both EMAs
+plot(current_tf_ema, color=color.blue, linewidth=2, title="Current TF 20 EMA")
+plot(higher_tf_ema, color=color.red, linewidth=2, title="1H 20 EMA")
